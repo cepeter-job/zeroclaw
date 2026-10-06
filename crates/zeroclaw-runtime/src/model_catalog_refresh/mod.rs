@@ -125,7 +125,7 @@ mod tests {
     async fn idle_refresher_observes_shutdown() {
         let config = Arc::new(RwLock::new(Config::default()));
         let cancel = tokio_util::sync::CancellationToken::new();
-        let task = tokio::spawn(run(config, cancel.clone()));
+        let task = ::zeroclaw_spawn::spawn!(run(config, cancel.clone()));
         tokio::task::yield_now().await;
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), task)
@@ -146,8 +146,10 @@ mod tests {
     #[test]
     fn publish_preserves_other_provider_entries_and_filters_paid_models() {
         let folder = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.data_dir = folder.path().to_path_buf();
+        let config = Config {
+            data_dir: folder.path().to_path_buf(),
+            ..Config::default()
+        };
         crate::doctor::persist_model_cache(&config, "custom.other", &["existing".into()]).unwrap();
         assert_eq!(
             publish_catalog(
@@ -181,8 +183,10 @@ mod tests {
     #[test]
     fn empty_selection_preserves_previous_cache_bytes() {
         let folder = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.data_dir = folder.path().to_path_buf();
+        let config = Config {
+            data_dir: folder.path().to_path_buf(),
+            ..Config::default()
+        };
         crate::doctor::persist_model_cache(&config, "custom.nous_free", &["old:free".into()])
             .unwrap();
         let path = config.data_dir.join("state/models_cache.json");
@@ -194,8 +198,10 @@ mod tests {
     #[test]
     fn malformed_cache_is_not_replaced() {
         let folder = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.data_dir = folder.path().to_path_buf();
+        let config = Config {
+            data_dir: folder.path().to_path_buf(),
+            ..Config::default()
+        };
         std::fs::create_dir_all(config.data_dir.join("state")).unwrap();
         let path = config.data_dir.join("state/models_cache.json");
         std::fs::write(&path, "invalid json").unwrap();
