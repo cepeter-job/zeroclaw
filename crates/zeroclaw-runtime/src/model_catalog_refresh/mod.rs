@@ -125,7 +125,8 @@ mod tests {
     async fn idle_refresher_observes_shutdown() {
         let config = Arc::new(RwLock::new(Config::default()));
         let cancel = tokio_util::sync::CancellationToken::new();
-        let task = ::zeroclaw_spawn::spawn!(run(config, cancel.clone()));
+        let task_cancel = cancel.clone();
+        let task = ::zeroclaw_spawn::spawn!(run(config, task_cancel));
         tokio::task::yield_now().await;
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(1), task)
