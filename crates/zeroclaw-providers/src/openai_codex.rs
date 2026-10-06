@@ -18,6 +18,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use zeroclaw_api::tool::ToolSpec;
 
+#[path = "openai_codex_catalog.rs"]
+mod model_catalog;
+
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_CODEX_INSTRUCTIONS: &str =
     "You are ZeroClaw, a concise and helpful coding assistant.";
@@ -1477,6 +1480,63 @@ impl OpenAiCodexModelProvider {
 
 #[async_trait]
 impl ModelProvider for OpenAiCodexModelProvider {
+    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        let endpoint =
+            model_catalog::catalog_url(&self.responses_url).map_err(anyhow::Error::msg)?;
+        let credentials = self.resolve_credentials().await?;
+        // Catalog requests carry OAuth forwarding headers on gateways; never
+        // let a redirect move those credentials to a different endpoint.
+        let client = zeroclaw_config::schema::apply_runtime_proxy_to_builder(
+            Client::builder().connect_timeout(std::time::Duration::from_secs(10)),
+            "model_provider.openai",
+        )
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| anyhow::anyhow!("Codex catalog client initialization failed"))?;
+        let version = model_catalog::client_version(model_catalog::CLIENT_VERSION)
+            .map_err(anyhow::Error::msg)?;
+        let mut request = client
+            .get(endpoint)
+            .query(&[("client_version", version.as_str())])
+            .timeout(std::time::Duration::from_secs(20))
+            .bearer_auth(&credentials.bearer_token)
+            .header("originator", "codex_cli_rs")
+            .header("accept", "application/json")
+            .header(
+                "user-agent",
+                format!(
+                    "codex_cli_rs/0.0.0 (ZeroClaw/{})",
+                    model_catalog::CLIENT_VERSION
+                ),
+            );
+        if let Some(account_id) = credentials.account_id.as_deref() {
+            request = request.header("chatgpt-account-id", account_id);
+        }
+        if credentials.use_gateway_api_key_auth {
+            if let Some(token) = credentials.access_token.as_deref() {
+                request = request.header("x-openai-access-token", token);
+            }
+            if let Some(account_id) = credentials.account_id.as_deref() {
+                request = request.header("x-openai-account-id", account_id);
+            }
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("Codex catalog request failed"))?;
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Codex catalog request failed (HTTP {})",
+                response.status().as_u16()
+            );
+        }
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|_| anyhow::anyhow!("invalid Codex model catalog response"))?;
+        model_catalog::parse_models(&payload).map_err(anyhow::Error::msg)
+    }
+
     // ── Provider-family defaults ──
     fn default_wire_api(&self) -> &str {
         WIRE_API
@@ -1698,6 +1758,62 @@ impl ::zeroclaw_api::attribution::Attributable for OpenAiCodexModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn codex_catalog_refresh_reuses_bridge_client_identity() {
+        use axum::{
+            Json, Router,
+            http::{HeaderMap, Uri},
+            routing::get,
+        };
+        let _guard = crate::RuntimeProxyTestGuard::acquire().await;
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let app = Router::new().route(
+            "/v1/models",
+            get(
+                move |uri: Uri, headers: HeaderMap| {
+                    let captured = captured.clone();
+                    async move {
+                        assert_eq!(
+                            headers.get("authorization").unwrap(),
+                            "Bearer test-catalog-key"
+                        );
+                        assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
+                        assert_eq!(headers.get("accept").unwrap(), "application/json");
+                        assert_eq!(headers.get("user-agent").unwrap(), "codex_cli_rs/0.0.0 (ZeroClaw/1.0)");
+                        let url = reqwest::Url::parse(&format!("http://localhost{uri}")).unwrap();
+                        let version = url.query_pairs().find(|(key, _)| key == "client_version")
+                            .unwrap().1.into_owned();
+                        captured.lock().unwrap().push(version);
+                        Json(serde_json::json!({"models": [
+                            {"slug": "gpt-6.1-sol-900k", "supported_in_api": true, "visibility": "list"},
+                            {"slug": "hidden", "supported_in_api": true, "visibility": "hide"}
+                        ]}))
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = zeroclaw_spawn::spawn!(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let options = ModelProviderRuntimeOptions {
+            provider_api_url: Some(format!("http://{addr}/v1")),
+            zeroclaw_dir: Some(temp.path().to_path_buf()),
+            secrets_encrypt: false,
+            ..ModelProviderRuntimeOptions::default()
+        };
+        let provider =
+            OpenAiCodexModelProvider::new("catalog-test", &options, Some("test-catalog-key"))
+                .unwrap();
+        let models = provider.list_models().await.unwrap();
+        server.abort();
+        assert_eq!(models, ["gpt-6.1-sol-900k"]);
+        assert_eq!(*requests.lock().unwrap(), ["1.0.0"]);
+    }
 
     enum MockCodexReply {
         Sse(&'static str),

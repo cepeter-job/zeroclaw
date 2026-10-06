@@ -7,6 +7,7 @@ on:
     paths:
       - 'crates/zeroclaw-config/**'
       - 'crates/zeroclaw-runtime/**'
+      - 'crates/zeroclaw-providers/**'
       - '.github/workflows/native-model-refresh.yml'
 
 permissions:
@@ -35,6 +36,8 @@ jobs:
         run: cargo test --locked -p zeroclaw-config --test model_catalog_refresh
       - name: Refresh and cache contracts
         run: cargo test --locked -p zeroclaw-runtime --lib model_catalog_refresh
+      - name: Codex provider and catalog contracts
+        run: cargo test --locked -p zeroclaw-providers --lib openai_codex
       - name: Build native CLI
         run: cargo build --locked --bin zeroclaw
       - name: Upload tested native CLI

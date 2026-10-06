@@ -78,6 +78,34 @@ The channel model command reads this cache as a preview (currently the first
 10 models per alias). Refresh does not generate a route for every model or
 remove the channel's existing preview limit.
 
+### OpenAI Codex subscription catalogs
+
+Codex aliases use the same scheduler but must not use `:free` filtering. For
+an existing subscription-authenticated alias, add:
+
+```toml
+[providers.models.openai.openai]
+requires_openai_auth = true
+model = "gpt-6-luna"
+wire_api = "responses"
+model_refresh_interval_secs = 3600
+model_refresh_free_only = false
+```
+
+The Codex provider resolves its existing OAuth profile (or custom gateway
+credentials) and requests the sibling `/models` endpoint on the same host as
+its configured `/responses` endpoint. Catalog discovery reuses the bridge's
+client identity (`originator=codex_cli_rs`, JSON accept header, and a Codex-style
+User-Agent). Its default client version `1.0` is normalized to `1.0.0` for the
+catalog query; no invented newest-version or sentinel fallback is used.
+Native `models[].slug` entries must include valid `supported_in_api` and
+`visibility` fields; only API-supported entries with `visibility="list"`
+are retained. Gateway `data[].id` catalogs remain supported. Eligible model
+IDs are preserved, sorted, and deduplicated without `:free` filtering.
+Authentication errors,
+invalid payloads, or empty catalogs do not replace cached models. Existing
+explicit routes and default model selections remain unchanged.
+
 ## Anthropic thinking passthrough
 
 `thinking_passthrough = true` on an OpenAI-compatible provider entry opts that
