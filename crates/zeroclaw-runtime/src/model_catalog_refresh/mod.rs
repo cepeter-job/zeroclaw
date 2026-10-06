@@ -89,7 +89,7 @@ pub(crate) async fn run(
                 ::zeroclaw_log::record!(
                     INFO,
                     ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
-                    "model catalog refreshed for {provider_ref}: {count} models"
+                    format!("model catalog refreshed for {provider_ref}: {count} models")
                 );
             } else {
                 // Upstream errors can include request material; do not echo
@@ -97,7 +97,9 @@ pub(crate) async fn run(
                 ::zeroclaw_log::record!(
                     WARN,
                     ::zeroclaw_log::Event::new(module_path!(), ::zeroclaw_log::Action::Note),
-                    "model catalog refresh failed for {provider_ref}; previous cache retained"
+                    format!(
+                        "model catalog refresh failed for {provider_ref}; previous cache retained"
+                    )
                 );
             }
         }

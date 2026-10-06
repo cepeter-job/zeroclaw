@@ -1492,7 +1492,7 @@ impl ModelProvider for OpenAiCodexModelProvider {
         )
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| anyhow::anyhow!("Codex catalog client initialization failed"))?;
+        .map_err(|_| anyhow::Error::msg("Codex catalog client initialization failed"))?;
         let version = model_catalog::client_version(model_catalog::CLIENT_VERSION)
             .map_err(anyhow::Error::msg)?;
         let mut request = client
@@ -1523,7 +1523,7 @@ impl ModelProvider for OpenAiCodexModelProvider {
         let response = request
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Codex catalog request failed"))?;
+            .map_err(|_| anyhow::Error::msg("Codex catalog request failed"))?;
         if !response.status().is_success() {
             anyhow::bail!(
                 "Codex catalog request failed (HTTP {})",
@@ -1533,7 +1533,7 @@ impl ModelProvider for OpenAiCodexModelProvider {
         let payload: Value = response
             .json()
             .await
-            .map_err(|_| anyhow::anyhow!("invalid Codex model catalog response"))?;
+            .map_err(|_| anyhow::Error::msg("invalid Codex model catalog response"))?;
         model_catalog::parse_models(&payload).map_err(anyhow::Error::msg)
     }
 
