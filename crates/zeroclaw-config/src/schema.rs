@@ -941,6 +941,16 @@ pub struct ModelProviderConfig {
     #[tab(Model)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Native daemon catalog refresh interval. Unset or zero disables refresh;
+    /// positive values below 60 seconds are clamped to one minute.
+    #[tab(Advanced)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_refresh_interval_secs: Option<u64>,
+    /// Keep only explicitly advertised `:free` model IDs during automatic
+    /// refresh. This is an ID convention, not a general pricing guarantee.
+    #[tab(Advanced)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub model_refresh_free_only: bool,
     /// Extra HTTP headers sent with every request. Niche: used for auth bridges, corporate proxies, or custom gateways that demand a tracing header. Most users never touch this; edit `config.toml` directly if you need it.
     #[tab(Connection)]
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

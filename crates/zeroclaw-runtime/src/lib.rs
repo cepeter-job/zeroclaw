@@ -12,6 +12,7 @@ mod generated_locales;
 pub mod identity;
 pub mod live_config_authority;
 pub mod migration;
+mod model_catalog_refresh;
 pub mod util;
 
 pub mod agent;

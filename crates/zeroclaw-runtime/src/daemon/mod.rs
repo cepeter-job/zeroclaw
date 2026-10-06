@@ -800,6 +800,20 @@ pub async fn run_with_authority(
     // through either surface therefore binds the other before the writer
     // returns, not at the next daemon reload.
     let live_config = live_config_authority.config();
+    let catalog_live_config = std::sync::Arc::clone(&live_config);
+    let catalog_cancel = channels_cancel.clone();
+    handles.push(spawn_component_supervisor(
+        "model_catalog_refresh",
+        initial_backoff,
+        max_backoff,
+        channels_cancel.clone(),
+        move || {
+            crate::model_catalog_refresh::run(
+                std::sync::Arc::clone(&catalog_live_config),
+                catalog_cancel.clone(),
+            )
+        },
+    ));
     // The daemon owns the live-pricing refresher, so it runs whether or not the
     // gateway is enabled. It follows this generation's live configuration, the
     // one the RPC context and the supervised gateway both write in place, so

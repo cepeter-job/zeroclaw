@@ -28,6 +28,56 @@ Almost every family also takes the shared fields from `ModelProviderConfig`:
 
 Family-specific entries add their own typed fields on top of these shared fields.
 
+## Native model-catalog auto-refresh
+
+The daemon can refresh selected provider catalogs without cron or a separate
+service. Refresh is disabled by default. Add these fields to each desired
+provider entry (including custom OpenAI-compatible aliases):
+
+```toml
+[providers.models.custom.nous_free]
+kind = "openai-compatible"
+uri = "https://inference-api.nousresearch.com/v1"
+model = "poolside/laguna-xs-2.1:free"
+wire_api = "chat_completions"
+model_refresh_interval_secs = 3600
+model_refresh_free_only = true
+
+[providers.models.custom.openrouter_free]
+kind = "openai-compatible"
+uri = "https://openrouter.ai/api/v1"
+model = "openrouter/free"
+wire_api = "chat_completions"
+model_refresh_interval_secs = 3600
+model_refresh_free_only = true
+```
+
+Provision credentials through the normal provider credential settings; do not
+copy real keys into documentation or commit them to source control.
+
+Enabled aliases refresh immediately on daemon startup and then on their own
+interval, checked every 30 seconds. Unset or zero intervals disable refresh;
+positive values below 60 seconds are clamped to one minute. The daemon reads
+live config before each scheduling pass, so policy changes do not require a
+restart. Reload and shutdown cancel the supervised refresher.
+
+`model_refresh_free_only` keeps only advertised IDs ending exactly in `:free`.
+This is the Nous/OpenRouter free-variant naming convention, **not** a general
+pricing validator. IDs such as `openrouter/free` are deliberately excluded
+from the filtered catalog. Manual `models refresh` remains unfiltered.
+
+Successful nonempty catalogs are sorted, deduplicated, and merged into the
+shared `<data_dir>/state/models_cache.json` using the existing cache lock and
+atomic writer. Other aliases, configured default models, and `model_routes`
+are unchanged. Failed or timed-out probes, empty selections, and malformed
+existing caches leave the last good catalog untouched. Network probes time
+out after 60 seconds; failed attempts retry on the configured interval rather
+than on every scheduling pass.
+
+The channel model command reads this cache as a preview (currently the first
+10 models per alias). Refresh does not generate a route for every model or
+remove the channel's existing preview limit.
+
 ## Anthropic thinking passthrough
 
 `thinking_passthrough = true` on an OpenAI-compatible provider entry opts that
