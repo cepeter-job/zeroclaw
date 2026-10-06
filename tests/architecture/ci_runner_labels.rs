@@ -1,6 +1,6 @@
 //! Architecture gate for Quality Gate and Advisory Windows Tests runner selection.
 //!
-//! The compile-heavy jobs name their Blacksmith runner label directly instead
+//! The compile-heavy jobs name their hosted Ubuntu runner label directly instead
 //! of reading it from a `fmt` output. `runs-on` resolves before a job is
 //! created, so reading it from another job forced every compile job to wait for
 //! a GitHub-hosted runner to pick up the formatting check first. Writing the
@@ -18,19 +18,13 @@ use regex::Regex;
 
 /// The one runner label the compile-heavy fleet may use. Moving the fleet means
 /// changing this constant and every job below in the same reviewed commit.
-const RUNNER_LABEL: &str = "blacksmith-8vcpu-ubuntu-2404";
+const RUNNER_LABEL: &str = "ubuntu-24.04";
 
-/// The runner label for housekeeping jobs: formatting, change detection,
-/// repository guards, docs and policy gates, the Nix checks, the container
-/// smoke, the Windows-test selector, and the required-gate aggregator. None of
-/// them needs 8 vCPUs, but all of them were stranded on `ubuntu-latest` during
-/// the 2026-09-14 hosted-runner assignment outage while the Blacksmith fleet
-/// ran untouched, so the whole required gate stalled on jobs whose combined
-/// work is minutes. Hosting them on Blacksmith removes GitHub's hosted pool
-/// from the required gate's critical path entirely.
-const HOUSEKEEPING_LABEL: &str = "blacksmith-4vcpu-ubuntu-2404";
+/// Housekeeping shares the compile runner image on this fork because no
+/// Blacksmith runner pool is available. Keep both inventories explicit.
+const HOUSEKEEPING_LABEL: &str = "ubuntu-24.04";
 
-/// Every housekeeping job in the two workflows on the Blacksmith 4-vCPU class.
+/// Every housekeeping job in the two workflows on the hosted Ubuntu image.
 /// Workflow-qualified IDs keep same-named jobs in different workflows distinct.
 const HOUSEKEEPING_JOBS: [&str; 19] = [
     "ci.yml/fmt",
@@ -62,7 +56,7 @@ const HOUSEKEEPING_JOBS: [&str; 19] = [
 /// that cannot run.
 const HOSTED_LINUX_JOBS: [&str; 1] = ["test-landlock"];
 
-/// Every job that compiles the workspace on the Blacksmith fleet. A new compile
+/// Every job that compiles the workspace on the hosted Ubuntu fleet. A new compile
 /// job must be added here, which is the point: the list is the inventory this
 /// gate checks the workflow against.
 const COMPILE_JOBS: [&str; 12] = [
@@ -85,15 +79,8 @@ const COMPILE_JOBS: [&str; 12] = [
 /// apart from COMPILE_JOBS but still count toward the fleet inventory.
 const REUSABLE_COMPILE_JOBS: [&str; 1] = ["crates-preflight"];
 
-/// `use-blacksmith` inputs the rust-cache composite may receive. The matrix
-/// expression belongs to `build`, whose macOS and Windows legs stay on the
-/// GitHub-hosted cache; `'false'` belongs to the web job, which does not
-/// compile the workspace.
-const ALLOWED_CACHE_INPUTS: [&str; 3] = [
-    "'true'",
-    "'false'",
-    "${{ matrix.target == 'x86_64-unknown-linux-gnu' }}",
-];
+/// Hosted runners must use the GitHub cache provider, never Blacksmith's sticky disk.
+const ALLOWED_CACHE_INPUTS: [&str; 1] = ["'false'"];
 
 fn ci_workflow() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -189,7 +176,7 @@ fn compile_jobs_pin_the_runner_label_instead_of_reading_it_from_fmt() {
 }
 
 #[test]
-fn only_the_declared_compile_jobs_claim_the_blacksmith_fleet() {
+fn only_declared_jobs_claim_the_hosted_runner() {
     let blocks = runner_workflow_jobs();
 
     let claiming: BTreeSet<String> = blocks
@@ -201,12 +188,13 @@ fn only_the_declared_compile_jobs_claim_the_blacksmith_fleet() {
         .into_iter()
         .chain(REUSABLE_COMPILE_JOBS)
         .map(|name| format!("ci.yml/{name}"))
+        .chain(HOUSEKEEPING_JOBS.into_iter().map(str::to_owned))
         .collect();
 
     assert_eq!(
         claiming, declared,
-        "every job using {RUNNER_LABEL} must be listed in COMPILE_JOBS or \
-         REUSABLE_COMPILE_JOBS, so the fleet inventory stays reviewable in one place"
+        "every job using {RUNNER_LABEL} must be listed in the compile or \
+         housekeeping inventories, so the fleet stays reviewable in one place"
     );
 }
 
@@ -227,7 +215,7 @@ fn rust_cache_callers_pass_a_reviewed_provider_input() {
 }
 
 #[test]
-fn housekeeping_jobs_pin_the_four_vcpu_label() {
+fn housekeeping_jobs_pin_the_hosted_label() {
     let blocks = runner_workflow_jobs();
 
     for name in HOUSEKEEPING_JOBS {
@@ -239,24 +227,6 @@ fn housekeeping_jobs_pin_the_four_vcpu_label() {
             "{name} must run on {HOUSEKEEPING_LABEL}"
         );
     }
-}
-
-#[test]
-fn only_the_declared_housekeeping_jobs_claim_the_four_vcpu_class() {
-    let blocks = runner_workflow_jobs();
-
-    let claiming: BTreeSet<&str> = blocks
-        .iter()
-        .filter(|(_, block)| block.contains(HOUSEKEEPING_LABEL))
-        .map(|(name, _)| name.as_str())
-        .collect();
-    let declared: BTreeSet<&str> = HOUSEKEEPING_JOBS.into_iter().collect();
-
-    assert_eq!(
-        claiming, declared,
-        "every job using {HOUSEKEEPING_LABEL} must be listed in \
-         HOUSEKEEPING_JOBS, so this inventory stays reviewable in one place"
-    );
 }
 
 #[test]
