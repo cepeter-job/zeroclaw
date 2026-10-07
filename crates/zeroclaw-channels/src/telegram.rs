@@ -2067,7 +2067,7 @@ impl TelegramChannel {
                 }),
             ModelPickerAction::Reasoning(None) => {
                 let command = "/thinking reset".to_string();
-                let msg = callback
+                callback
                     .get("from")
                     .and_then(Self::telegram_sender_identity)
                     .map(|current_sender| ChannelMessage {
@@ -2087,8 +2087,7 @@ impl TelegramChannel {
                     })
                     .map_or(ModelPickerCallbackOutcome::Rejected, |message| {
                         ModelPickerCallbackOutcome::Queued(Box::new(message))
-                    });
-                msg
+                    })
             }
             ModelPickerAction::Reasoning(Some(level)) => {
                 let command = if level.trim().to_ascii_lowercase() == "reset" {
@@ -2096,7 +2095,7 @@ impl TelegramChannel {
                 } else {
                     format!("/thinking {}", level.trim())
                 };
-                let msg = callback
+                callback
                     .get("from")
                     .and_then(Self::telegram_sender_identity)
                     .map(|current_sender| ChannelMessage {
@@ -2116,8 +2115,7 @@ impl TelegramChannel {
                     })
                     .map_or(ModelPickerCallbackOutcome::Rejected, |message| {
                         ModelPickerCallbackOutcome::Queued(Box::new(message))
-                    });
-                msg
+                    })
             }
             ModelPickerAction::Cancel => ModelPickerCallbackOutcome::Cancelled,
             ModelPickerAction::Back => {
