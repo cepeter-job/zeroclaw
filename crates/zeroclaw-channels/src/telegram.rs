@@ -7824,7 +7824,7 @@ impl Channel for TelegramChannel {
             .edit_model_picker_message_at(
                 chat_id_number,
                 picker_message_id,
-                picker_text,
+                picker_text.to_string(),
                 reply_markup,
             )
             .await

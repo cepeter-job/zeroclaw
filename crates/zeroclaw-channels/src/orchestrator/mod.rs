@@ -5274,7 +5274,7 @@ async fn handle_runtime_command_for_delivery(
         }
         ChannelRuntimeCommand::SetThinking(level) => {
             let mut removed = false;
-            let mut apply = || {
+            let apply = || {
                 let mut overrides = ctx
                     .thinking_overrides
                     .lock()
@@ -5294,7 +5294,10 @@ async fn handle_runtime_command_for_delivery(
                 return true;
             }
             #[cfg(not(feature = "channel-telegram"))]
-            apply();
+            {
+                let mut apply = apply;
+                apply();
+            }
             match level {
                 Some(level) => channel_runtime_cli_string_with_args(
                     "channel-runtime-thinking-set",
