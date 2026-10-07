@@ -39,7 +39,9 @@ jobs:
       - name: Codex provider and catalog contracts
         run: cargo test --locked -p zeroclaw-providers --lib openai_codex
       - name: Keyless custom catalog contracts
-        run: cargo test --locked -p zeroclaw-providers --lib custom_factory_lists_public_catalog_without_credentials
+        run: |
+          cargo test --locked -p zeroclaw-providers --lib factory::tests
+          cargo test --locked -p zeroclaw-providers --lib absent_catalog_sources_return_typed_unsupported
       - name: Build native CLI
         run: cargo build --locked --bin zeroclaw
       - name: Upload tested native CLI

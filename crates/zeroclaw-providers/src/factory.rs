@@ -1978,6 +1978,8 @@ impl FamilyProviderFactory for CustomModelProviderConfig {
             .base_url(base_url)
             .credential(key)
             .auth_style(AuthStyle::Bearer)
+            // Custom endpoints may expose a public catalog without an inference key.
+            .public_model_listing()
             .vision(true);
         if opts.native_tools != Some(true) {
             b = b.without_native_tools();
