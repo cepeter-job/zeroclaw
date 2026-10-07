@@ -2090,7 +2090,7 @@ impl TelegramChannel {
                     })
             }
             ModelPickerAction::Reasoning(Some(level)) => {
-                let command = if level.trim().to_ascii_lowercase() == "reset" {
+                let command = if level.trim().eq_ignore_ascii_case("reset") {
                     "/thinking reset".to_string()
                 } else {
                     format!("/thinking {}", level.trim())
