@@ -3014,6 +3014,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["nous/model:free", "nous/paid"]
         );
+        // Persisted custom aliases can explicitly select the generic compatible kind.
+        let overridden = dispatch_family_factory(
+            None,
+            "openai-compatible",
+            "nous_free",
+            None,
+            Some(&format!("http://{addr}/v1")),
+            &ModelProviderRuntimeOptions::default(),
+        )
+        .expect("construct explicit compatible kind");
+        assert_eq!(
+            overridden
+                .list_models()
+                .await
+                .expect("list explicit compatible public catalog"),
+            vec!["nous/model:free", "nous/paid"]
+        );
+        assert_eq!(
+            overridden
+                .list_models_with_pricing()
+                .await
+                .expect("list explicit compatible pricing")
+                .len(),
+            2
+        );
         server.abort();
     }
 
