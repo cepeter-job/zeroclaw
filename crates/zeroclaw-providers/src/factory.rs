@@ -2021,6 +2021,7 @@ impl FamilyProviderFactory for zeroclaw_config::schema::ModelProviderConfig {
             .base_url(base_url)
             .credential(key)
             .auth_style(AuthStyle::Bearer)
+            .public_model_listing()
             .vision(true);
         if opts.merge_system_into_user {
             b = b.merge_system_into_user_preserving_native();
