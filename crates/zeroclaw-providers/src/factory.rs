@@ -2963,6 +2963,58 @@ mod tests {
         assert_ne!(provider.default_wire_api(), "responses");
     }
 
+    #[tokio::test]
+    async fn custom_factory_lists_public_catalog_without_credentials() {
+        use axum::{Json, Router, http::HeaderMap, routing::get};
+        use zeroclaw_config::schema::CustomModelProviderConfig;
+
+        let app = Router::new().route(
+            "/v1/models",
+            get(|headers: HeaderMap| async move {
+                assert!(!headers.contains_key(axum::http::header::AUTHORIZATION));
+                Json(serde_json::json!({
+                    "data": [{"id": "nous/model:free"}, {"id": "nous/paid"}]
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind public custom catalog");
+        let addr = listener.local_addr().expect("read fixture address");
+        let server = ::zeroclaw_spawn::spawn!(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve custom catalog");
+        });
+        let provider = CustomModelProviderConfig::default()
+            .create_provider(
+                "nous_free",
+                None,
+                Some(&format!("http://{addr}/v1")),
+                &ModelProviderRuntimeOptions::default(),
+            )
+            .expect("construct keyless custom provider");
+        assert_eq!(
+            provider
+                .list_models()
+                .await
+                .expect("list public custom models"),
+            vec!["nous/model:free", "nous/paid"]
+        );
+        let priced = provider
+            .list_models_with_pricing()
+            .await
+            .expect("list public catalog pricing");
+        assert_eq!(
+            priced
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nous/model:free", "nous/paid"]
+        );
+        server.abort();
+    }
+
     #[test]
     fn custom_factory_routes_to_responses_provider_when_wire_api_responses() {
         use zeroclaw_config::schema::{CustomModelProviderConfig, ModelProviderConfig, WireApi};
