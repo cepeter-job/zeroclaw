@@ -4912,6 +4912,35 @@ async fn handle_runtime_command_for_delivery(
     let sender_key = runtime_conversation_history_key(ctx, msg);
     let defaults_snapshot = runtime_defaults_snapshot(ctx);
     let mut current = get_route_selection(ctx, msg, &sender_key, &defaults_snapshot);
+    let model_routes = if msg.channel == "telegram" {
+        crate::model_catalog_routes::with_cached_models(
+            defaults_snapshot.config.as_ref(),
+            &ctx.model_routes,
+        )
+    } else {
+        ctx.model_routes.as_ref().clone()
+    };
+
+    let requested_model = match &command {
+        ChannelRuntimeCommand::SetModel(model)
+        | ChannelRuntimeCommand::SetModelScoped(_, model) => Some(model.trim().trim_matches('`')),
+        _ => None,
+    };
+    if requested_model.is_some_and(|model| {
+        model.starts_with("catalog:")
+            && !model_routes
+                .iter()
+                .any(|route| route.hint.eq_ignore_ascii_case(model))
+    }) {
+        // A catalog token must never degrade into a raw model ID on the old provider.
+        let _ = channel
+            .send(&SendMessage::new(
+                "Model catalog changed. Open /model again.",
+                &msg.reply_target,
+            ))
+            .await;
+        return true;
+    }
 
     if command == ChannelRuntimeCommand::ShowModel && is_bare_model_picker_command(&msg.content) {
         let request = zeroclaw_api::channel::ChannelModelPickerRequest {
@@ -4926,8 +4955,7 @@ async fn handle_runtime_command_for_delivery(
             owner_agent_alias: ctx.agent_alias.as_str().to_string(),
             current_model_provider: current.model_provider.clone(),
             current_model: current.model.clone(),
-            model_routes: ctx
-                .model_routes
+            model_routes: model_routes
                 .iter()
                 .map(|route| zeroclaw_api::channel::ChannelModelPickerRoute {
                     hint: route.hint.clone(),
@@ -5060,7 +5088,7 @@ async fn handle_runtime_command_for_delivery(
                 // Resolve provider+model the same way bare `/model` does, then
                 // write it at the requested scope instead of the per-sender route.
                 let mut next = current.clone();
-                apply_model_ref(&mut next, &ctx.model_routes, &model);
+                apply_model_ref(&mut next, &model_routes, &model);
                 set_scope_override(ctx, scope, msg, next.clone(), &defaults_snapshot);
                 if scope == OverrideScope::Agent {
                     let channel_alias =
@@ -5123,12 +5151,12 @@ async fn handle_runtime_command_for_delivery(
                 #[cfg(feature = "channel-telegram")]
                 let picker_applied =
                     crate::model_picker_delivery::apply_if_not_revoked(delivery_message_id, || {
-                        apply_model_ref(&mut current, &ctx.model_routes, &model);
+                        apply_model_ref(&mut current, &model_routes, &model);
                         set_route_selection(ctx, &sender_key, current.clone(), &defaults_snapshot);
                     });
                 #[cfg(not(feature = "channel-telegram"))]
                 {
-                    apply_model_ref(&mut current, &ctx.model_routes, &model);
+                    apply_model_ref(&mut current, &model_routes, &model);
                     set_route_selection(ctx, &sender_key, current.clone(), &defaults_snapshot);
                 }
                 #[cfg(feature = "channel-telegram")]
@@ -19627,6 +19655,60 @@ pub(crate) mod tests {
             !delivered.contains("temporarily unavailable"),
             "an aggregate's earlier transient hint must not mask terminal completion failure"
         );
+    }
+
+    #[test]
+    fn model_picker_catalog_hint_switches_provider_and_model() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            data_dir: folder.path().into(),
+            ..Default::default()
+        };
+        config.providers.models.custom.insert(
+            "free".into(),
+            zeroclaw_config::schema::CustomModelProviderConfig::default(),
+        );
+        config
+            .model_routes
+            .push(zeroclaw_config::schema::ModelRouteConfig {
+                hint: "free".into(),
+                model_provider: "custom.free".into(),
+                model: "old:free".into(),
+                api_key: None,
+            });
+        std::fs::create_dir_all(folder.path().join("state")).unwrap();
+        std::fs::write(
+            folder.path().join("state/models_cache.json"),
+            serde_json::to_vec(&zeroclaw_config::schema::ModelCacheState {
+                entries: vec![zeroclaw_config::schema::ModelCacheEntry {
+                    model_provider: "custom.free".into(),
+                    models: vec!["new:free".into()],
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let routes = crate::model_catalog_routes::with_cached_models(&config, &config.model_routes);
+        let option = routes.iter().find(|r| r.model == "new:free").unwrap();
+        let command = format!("/model {}", option.hint);
+        let Some(ChannelRuntimeCommand::SetModel(argument)) =
+            parse_runtime_command("telegram", &command)
+        else {
+            panic!("catalog hint must round trip");
+        };
+        let mut selection = ChannelRouteSelection {
+            model_provider: "openai.other".into(),
+            model: "previous".into(),
+            api_key: Some("previous-provider-key".into()),
+        };
+        apply_model_ref(&mut selection, &routes, &argument);
+        assert_eq!(selection.model_provider, "custom.free");
+        assert_eq!(selection.model, "new:free");
+        assert!(
+            selection.api_key.is_none(),
+            "never inherit the previous provider credential"
+        );
+        assert_eq!(config.model_routes.len(), 1);
     }
 
     #[test]

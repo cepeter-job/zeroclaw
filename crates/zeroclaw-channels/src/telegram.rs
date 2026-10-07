@@ -1284,6 +1284,29 @@ impl TelegramChannel {
         model.eq_ignore_ascii_case(argument) || hint.eq_ignore_ascii_case(argument)
     }
 
+    fn model_picker_catalog_routes(
+        config: &Config,
+        routes: &[ModelPickerOption],
+    ) -> Vec<ModelPickerOption> {
+        let routes: Vec<_> = routes
+            .iter()
+            .map(|route| zeroclaw_config::schema::ModelRouteConfig {
+                hint: route.hint.clone(),
+                model_provider: route.model_provider.clone(),
+                model: route.model.clone(),
+                api_key: None,
+            })
+            .collect();
+        crate::model_catalog_routes::with_cached_models(config, &routes)
+            .into_iter()
+            .map(|route| ModelPickerOption {
+                hint: route.hint,
+                model_provider: route.model_provider,
+                model: route.model,
+            })
+            .collect()
+    }
+
     /// Classify why `selected` cannot be offered, or `None` when selecting
     /// it through `/model <hint>` resolves to exactly this route.
     fn model_picker_route_exclusion(
@@ -1297,13 +1320,16 @@ impl TelegramChannel {
         {
             return Some(ModelPickerExclusion::UnsafeField);
         }
+        let configured_routes =
+            crate::model_catalog_routes::with_cached_models(config, &config.model_routes);
+        let runtime_routes = Self::model_picker_catalog_routes(config, runtime_routes);
         let is_selected_route = |route: &zeroclaw_config::schema::ModelRouteConfig| {
             route.hint == selected.hint
                 && route.model_provider == selected.model_provider
                 && route.model == selected.model
         };
         if !Self::configured_model_provider(config, &selected.model_provider)
-            || !config.model_routes.iter().any(&is_selected_route)
+            || !configured_routes.iter().any(&is_selected_route)
             || !runtime_routes.iter().any(|route| route == selected)
         {
             return Some(ModelPickerExclusion::Unresolvable);
@@ -1312,8 +1338,7 @@ impl TelegramChannel {
         // against the configured routes and the live runtime routes alike.
         // If either list resolves the hint to a different route first, this
         // target is unreachable through its own hint and must not be shown.
-        let shadowing_configured = config
-            .model_routes
+        let shadowing_configured = configured_routes
             .iter()
             .find(|route| {
                 Self::model_picker_route_matches_argument(&route.hint, &route.model, &selected.hint)
@@ -1429,6 +1454,8 @@ impl TelegramChannel {
             .clone()
             .unwrap_or_default();
 
+        let expanded_routes = Self::model_picker_catalog_routes(config, runtime_routes);
+        let runtime_routes = expanded_routes.as_slice();
         let mut categories: Vec<ModelPickerCategory> = Vec::new();
         // Presented (provider, model) targets and the hint each is shown
         // under; its length is the number of options offered so far.
@@ -12664,6 +12691,15 @@ mod tests {
             config.model_routes.len(),
             4,
             "catalog must not rewrite persistent routes"
+        );
+        std::fs::remove_file(folder.path().join("state/models_cache.json")).unwrap();
+        assert!(
+            !TelegramChannel::model_picker_route_available(
+                &config,
+                runtime_routes.as_ref(),
+                selected
+            ),
+            "removed catalog choices must be revoked"
         );
     }
 
