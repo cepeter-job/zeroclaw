@@ -355,6 +355,16 @@ impl Channel for PacedChannel {
         self.inner.present_model_picker(request).await
     }
 
+    async fn present_reasoning_picker(
+        &self,
+        request: &ChannelModelPickerRequest,
+        active_level: &str,
+    ) -> Result<bool> {
+        self.inner
+            .present_reasoning_picker(request, active_level)
+            .await
+    }
+
     /// Forward the inner channel's passive observation.
     ///
     /// Without this the trait default (`None`) answers for the wrapper, and a

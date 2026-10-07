@@ -4942,6 +4942,58 @@ async fn handle_runtime_command_for_delivery(
         return true;
     }
 
+    let mut reasoning_parts = msg.content.split_whitespace();
+    let bare_reasoning = reasoning_parts
+        .next()
+        .is_some_and(|word| matches!(word.split('@').next(), Some("/reasoning")))
+        && reasoning_parts.next().is_none();
+    if msg.channel == "telegram" && bare_reasoning {
+        let active = ctx
+            .thinking_overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&sender_key)
+            .copied()
+            .unwrap_or(ctx.agent_cfg.resolved.thinking.default_level);
+        let request = zeroclaw_api::channel::ChannelModelPickerRequest {
+            requesting_user: msg.sender.clone(),
+            requesting_user_id: msg.platform_sender_id.clone().unwrap_or_default(),
+            reply_target: msg.reply_target.clone(),
+            thread_ts: msg.thread_ts.clone(),
+            channel_alias: msg
+                .channel_alias
+                .clone()
+                .unwrap_or_else(|| msg.channel.clone()),
+            owner_agent_alias: ctx.agent_alias.as_str().to_string(),
+            current_model_provider: current.model_provider.clone(),
+            current_model: current.model.clone(),
+            model_routes: vec![],
+        };
+        match channel
+            .present_reasoning_picker(&request, active.as_str())
+            .await
+        {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(_) => {
+                let _ = channel.send(&SendMessage::reply_to(msg,
+                    "Could not open reasoning panel. Use /reasoning <off|minimal|low|medium|high|max|reset>."
+                )).await;
+                return true;
+            }
+        }
+        let _ = channel
+            .send(&SendMessage::reply_to(
+                msg,
+                format!(
+                    "Reasoning: {}. Use /reasoning <off|minimal|low|medium|high|max|reset>.",
+                    active.as_str()
+                ),
+            ))
+            .await;
+        return true;
+    }
+
     if command == ChannelRuntimeCommand::ShowModel && is_bare_model_picker_command(&msg.content) {
         let request = zeroclaw_api::channel::ChannelModelPickerRequest {
             requesting_user: msg.sender.clone(),
@@ -5220,38 +5272,47 @@ async fn handle_runtime_command_for_delivery(
             mark_sender_for_new_session(ctx, &sender_key);
             channel_runtime_cli_string("channel-runtime-new-session")
         }
-        ChannelRuntimeCommand::SetThinking(level) => match level {
-            Some(level) => {
-                ctx.thinking_overrides
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(sender_key.clone(), level);
-                channel_runtime_cli_string_with_args(
-                    "channel-runtime-thinking-set",
-                    &[("level", level.as_str())],
-                )
-            }
-            None => {
-                let removed = ctx
+        ChannelRuntimeCommand::SetThinking(level) => {
+            let mut removed = false;
+            let mut apply = || {
+                let mut overrides = ctx
                     .thinking_overrides
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&sender_key)
-                    .is_some();
-                let default = ctx.agent_cfg.resolved.thinking.default_level.as_str();
-                if removed {
+                    .unwrap_or_else(|e| e.into_inner());
+                match level {
+                    Some(level) => {
+                        overrides.insert(sender_key.clone(), level);
+                    }
+                    None => {
+                        removed = overrides.remove(&sender_key).is_some();
+                    }
+                }
+            };
+            // Serialize the state write with callback revocation, just like model selections.
+            #[cfg(feature = "channel-telegram")]
+            if !crate::model_picker_delivery::apply_if_not_revoked(delivery_message_id, apply) {
+                return true;
+            }
+            #[cfg(not(feature = "channel-telegram"))]
+            apply();
+            match level {
+                Some(level) => channel_runtime_cli_string_with_args(
+                    "channel-runtime-thinking-set",
+                    &[("level", level.as_str())],
+                ),
+                None => {
+                    let default = ctx.agent_cfg.resolved.thinking.default_level.as_str();
                     channel_runtime_cli_string_with_args(
-                        "channel-runtime-thinking-cleared",
-                        &[("default", default)],
-                    )
-                } else {
-                    channel_runtime_cli_string_with_args(
-                        "channel-runtime-thinking-default",
+                        if removed {
+                            "channel-runtime-thinking-cleared"
+                        } else {
+                            "channel-runtime-thinking-default"
+                        },
                         &[("default", default)],
                     )
                 }
             }
-        },
+        }
         ChannelRuntimeCommand::InvalidThinking(raw) => channel_runtime_cli_string_with_args(
             "channel-runtime-thinking-invalid",
             &[("raw", raw.as_str())],
@@ -42583,6 +42644,70 @@ BTC is currently around $65,000 based on latest tool output."#
         );
         // The dispatch gate consumed the revoked marker exactly once.
         assert!(!crate::model_picker_delivery::take_revoked(&selection.id));
+    }
+
+    #[cfg(feature = "channel-telegram")]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn reasoning_callback_revocation_prevents_level_and_reset_mutations() {
+        let _registry_guard = crate::model_picker_delivery::registry_test_lock();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ctx = channel_runtime_context_for_defaults_test(
+            tmp.path(),
+            "assistant",
+            "openrouter.default",
+            "config-model",
+        );
+        let channel_impl = Arc::new(TelegramRecordingChannel::default());
+        let channel: Arc<dyn Channel> = channel_impl.clone();
+        let mut selection = zeroclaw_api::channel::ChannelMessage {
+            id: "reasoning_claim_test".into(),
+            sender: "test_user".into(),
+            platform_sender_id: Some("123".into()),
+            reply_target: "chat-42:9".into(),
+            channel: "telegram".into(),
+            channel_alias: Some("main".into()),
+            thread_ts: Some("9".into()),
+            content: "/thinking high".into(),
+            timestamp: 1,
+            ..Default::default()
+        };
+        let key = runtime_conversation_history_key(&ctx, &selection);
+        ctx.thinking_overrides
+            .lock()
+            .unwrap()
+            .insert(key.clone(), ThinkingLevel::Low);
+        for content in ["/thinking high", "/thinking reset"] {
+            selection.content = content.into();
+            let ack = crate::model_picker_delivery::register(&selection.id);
+            crate::model_picker_delivery::revoke(&selection.id);
+            assert!(
+                handle_runtime_command_for_delivery(
+                    &ctx,
+                    &selection,
+                    Some(&channel),
+                    &selection.id
+                )
+                .await
+            );
+            assert_eq!(
+                ctx.thinking_overrides.lock().unwrap().get(&key),
+                Some(&ThinkingLevel::Low)
+            );
+            drop(ack);
+        }
+        assert!(channel_impl.sent_messages.lock().await.is_empty());
+        crate::model_picker_delivery::take_revoked(&selection.id);
+        selection.id = "reasoning_direct_high".into();
+        selection.content = "/reasoning high".into();
+        assert!(handle_runtime_command_if_needed(&ctx, &selection, Some(&channel)).await);
+        assert_eq!(
+            ctx.thinking_overrides.lock().unwrap().get(&key),
+            Some(&ThinkingLevel::High)
+        );
+        selection.content = "/reasoning reset".into();
+        assert!(handle_runtime_command_if_needed(&ctx, &selection, Some(&channel)).await);
+        assert!(!ctx.thinking_overrides.lock().unwrap().contains_key(&key));
     }
 
     /// Test hook that cancels every inbound message before dispatch, like
