@@ -2676,7 +2676,7 @@ fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRun
                 None
             }
         }
-        "/thinking" => {
+        "/thinking" | "/reasoning" => {
             let arg = parts.next();
             if parts.next().is_some() {
                 Some(ChannelRuntimeCommand::InvalidThinking(

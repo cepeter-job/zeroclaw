@@ -933,6 +933,17 @@ pub trait Channel: Send + Sync + crate::attribution::Attributable {
         Ok(false)
     }
 
+    /// Present a reasoning-level panel using the same runtime-owned conversation
+    /// context as the model picker. `active_level` is display-only; selected
+    /// levels must re-enter the existing `/thinking` runtime command path.
+    async fn present_reasoning_picker(
+        &self,
+        _request: &ChannelModelPickerRequest,
+        _active_level: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     /// Listener health as the channel itself last observed it.
     ///
     /// `health_check` is an *active* probe: implementations reach the remote

@@ -13346,6 +13346,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reasoning_panel_publishes_scoped_buttons_without_model_routes() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        for endpoint in ["sendMessage", "editMessageText"] {
+            Mock::given(method("POST"))
+                .and(path_regex(format!(r"/bot[^/]+/{endpoint}$")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true, "result": {"message_id": 77}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let mut config = model_picker_config();
+        config.model_routes.clear();
+        let channel = TelegramChannel::new(
+            "token".into(),
+            "main",
+            Arc::new(|| vec!["test_user".into()]),
+            false,
+        )
+        .with_persistence(Arc::new(RwLock::new(config)))
+        .with_mock_api_base(server.uri());
+        let request = ChannelModelPickerRequest {
+            requesting_user: "test_user".into(),
+            requesting_user_id: "123".into(),
+            reply_target: "-10042:9".into(),
+            thread_ts: Some("9".into()),
+            channel_alias: "main".into(),
+            owner_agent_alias: "assistant".into(),
+            current_model_provider: "openai.primary".into(),
+            current_model: "gpt-current".into(),
+            model_routes: vec![],
+        };
+        assert!(
+            channel
+                .present_reasoning_picker(&request, "medium")
+                .await
+                .unwrap(),
+            "Telegram must present a reasoning panel"
+        );
+        let requests = server.received_requests().await.unwrap();
+        let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(
+            first.get("reply_markup").is_none(),
+            "register tokens before publishing buttons"
+        );
+        let edit: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        let buttons: Vec<_> = edit["reply_markup"]["inline_keyboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|row| row.as_array().unwrap())
+            .collect();
+        assert_eq!(buttons.len(), 8, "six levels, reset and cancel");
+        assert!(buttons.iter().any(|b| {
+            b["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("medium") && t.contains('✓'))
+        }));
+        let pending = channel.pending_model_pickers.lock().await;
+        assert_eq!(pending.len(), 8);
+        assert!(pending.values().all(|s| s.requesting_user_id == "123"
+            && s.reply_target == "-10042:9"
+            && s.thread_ts.as_deref() == Some("9")
+            && s.picker_message_id == 77));
+    }
+
+    #[tokio::test]
     async fn telegram_model_picker_never_exposes_keyboard_without_registered_tokens() {
         use wiremock::matchers::{method, path_regex};
         use wiremock::{Mock, MockServer, ResponseTemplate};
