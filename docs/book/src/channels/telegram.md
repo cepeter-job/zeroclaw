@@ -30,6 +30,23 @@ There is no `allowed_users` field under `[channels.telegram.<alias>]`.
 Authorization lives in [Peer Groups](./peer-groups.md); that page is the
 canonical reference for peer-group fields, matching, and multi-agent behavior.
 
+## Reasoning controls
+
+Send `/reasoning` to open the inline reasoning panel. It shows the active
+thinking level and offers `off`, `minimal`, `low`, `medium`, `high`, and `max`,
+plus Reset and Cancel. Reset removes the conversation override and restores the
+agent's configured default; Cancel leaves the level unchanged.
+
+Only the requesting user can select a button, in the original chat and topic.
+Selections use the existing `/thinking` runtime path and affect that sender's
+conversation, not global agent configuration. The override is in memory and is
+cleared by `/new` or a runtime restart. You can also send `/reasoning high` or
+`/reasoning reset` directly; existing `/thinking <level>` commands remain valid.
+
+A selected level does not guarantee native reasoning support. Its effect
+still depends on the agent's thinking configuration and the current provider
+and model. Open a new panel if the old one has expired or routing has changed.
+
 ## 1. Create a Telegram bot
 
 1. Open [@BotFather](https://t.me/BotFather) in Telegram.

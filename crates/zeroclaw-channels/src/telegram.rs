@@ -339,12 +339,66 @@ struct ModelPickerPage<'a> {
     total_pages: usize,
 }
 
+/// Reasoning-level selection for the Telegram reasoning picker.
+/// Static string labels keep the enum `Copy` without owning heap data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReasoningLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl ReasoningLevel {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Minimal => "Minimal",
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Max => "Max",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ModelPickerAction {
-    OpenCategory { provider_ref: String, page: usize },
+    OpenCategory {
+        provider_ref: String,
+        page: usize,
+    },
     Select(ModelPickerOption),
     Back,
     Cancel,
+    /// Reasoning-level selection: `None` means reset/default, `Some(level)`
+    /// is the selected reasoning effort string (e.g. "medium", "high").
+    Reasoning(Option<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -1860,6 +1914,32 @@ impl TelegramChannel {
         self.is_any_user_allowed(identities)
     }
 
+    fn picker_state_context(
+        config: &Config,
+        alias: &str,
+        state: &PendingModelPicker,
+    ) -> Option<ModelPickerContext> {
+        if !state.runtime_routes.is_empty() {
+            return Self::model_picker_context(config, alias, state.runtime_routes.as_ref());
+        }
+        config.channels.telegram.get(alias).filter(|c| c.enabled)?;
+        let channel_ref = format!("telegram.{alias}");
+        let owner = config.agent_for_channel(&channel_ref)?;
+        let mut owners = config
+            .agents
+            .iter()
+            .filter(|(_, a)| a.enabled && a.channels.iter().any(|c| c.as_str() == channel_ref));
+        let (unique, _) = owners.next()?;
+        if unique != owner || owners.next().is_some() {
+            return None;
+        }
+        Some(ModelPickerContext {
+            owner_agent_alias: owner.to_string(),
+            current: state.current.clone(),
+            categories: vec![],
+        })
+    }
+
     async fn prevalidate_model_picker_callback(&self, callback: &serde_json::Value) -> bool {
         let Some(token) = callback
             .get("data")
@@ -1887,9 +1967,7 @@ impl TelegramChannel {
         };
         let config = config.config();
         let live = config.read();
-        let Some(context) =
-            Self::model_picker_context(&live, &self.alias, state.runtime_routes.as_ref())
-        else {
+        let Some(context) = Self::picker_state_context(&live, &self.alias, &state) else {
             return false;
         };
         if context.owner_agent_alias != state.owner_agent_alias {
@@ -1906,6 +1984,7 @@ impl TelegramChannel {
                 Self::model_picker_route_available(&live, state.runtime_routes.as_ref(), option)
             }
             ModelPickerAction::Back | ModelPickerAction::Cancel => true,
+            ModelPickerAction::Reasoning(_) => true,
         }
     }
 
@@ -1921,7 +2000,12 @@ impl TelegramChannel {
             .lock()
             .await
             .get(token)
-            .is_some_and(|state| matches!(state.action, ModelPickerAction::Select(_)))
+            .is_some_and(|state| {
+                matches!(
+                    state.action,
+                    ModelPickerAction::Select(_) | ModelPickerAction::Reasoning(_)
+                )
+            })
     }
 
     async fn process_model_picker_callback(
@@ -1948,9 +2032,7 @@ impl TelegramChannel {
         let context = {
             let config = config.config();
             let live = config.read();
-            let Some(mut context) =
-                Self::model_picker_context(&live, &self.alias, state.runtime_routes.as_ref())
-            else {
+            let Some(mut context) = Self::picker_state_context(&live, &self.alias, &state) else {
                 return ModelPickerCallbackOutcome::Rejected;
             };
             if context.owner_agent_alias != state.owner_agent_alias {
@@ -1983,6 +2065,58 @@ impl TelegramChannel {
                 .map_or(ModelPickerCallbackOutcome::Rejected, |message| {
                     ModelPickerCallbackOutcome::Queued(Box::new(message))
                 }),
+            ModelPickerAction::Reasoning(None) => {
+                let command = "/thinking reset".to_string();
+                callback
+                    .get("from")
+                    .and_then(Self::telegram_sender_identity)
+                    .map(|current_sender| ChannelMessage {
+                        id: format!("telegram_reasoning_{}", uuid::Uuid::new_v4()),
+                        sender: current_sender,
+                        platform_sender_id: Some(state.requesting_user_id.clone()),
+                        reply_target: state.reply_target.clone(),
+                        content: command,
+                        channel: "telegram".into(),
+                        channel_alias: Some(state.channel_alias.clone()),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        thread_ts: state.thread_ts.clone(),
+                        ..Default::default()
+                    })
+                    .map_or(ModelPickerCallbackOutcome::Rejected, |message| {
+                        ModelPickerCallbackOutcome::Queued(Box::new(message))
+                    })
+            }
+            ModelPickerAction::Reasoning(Some(level)) => {
+                let command = if level.trim().eq_ignore_ascii_case("reset") {
+                    "/thinking reset".to_string()
+                } else {
+                    format!("/thinking {}", level.trim())
+                };
+                callback
+                    .get("from")
+                    .and_then(Self::telegram_sender_identity)
+                    .map(|current_sender| ChannelMessage {
+                        id: format!("telegram_reasoning_{}", uuid::Uuid::new_v4()),
+                        sender: current_sender,
+                        platform_sender_id: Some(state.requesting_user_id.clone()),
+                        reply_target: state.reply_target.clone(),
+                        content: command,
+                        channel: "telegram".into(),
+                        channel_alias: Some(state.channel_alias.clone()),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        thread_ts: state.thread_ts.clone(),
+                        ..Default::default()
+                    })
+                    .map_or(ModelPickerCallbackOutcome::Rejected, |message| {
+                        ModelPickerCallbackOutcome::Queued(Box::new(message))
+                    })
+            }
             ModelPickerAction::Cancel => ModelPickerCallbackOutcome::Cancelled,
             ModelPickerAction::Back => {
                 let buttons = context
@@ -7534,6 +7668,169 @@ impl Channel for TelegramChannel {
                 .await;
             self.remove_pending_model_picker_keyboard(&anchor).await;
             anyhow::bail!("Telegram model picker keyboard update failed");
+        }
+        Ok(true)
+    }
+
+    async fn present_reasoning_picker(
+        &self,
+        request: &ChannelModelPickerRequest,
+        active_level: &str,
+    ) -> anyhow::Result<bool> {
+        if request.channel_alias != self.alias || request.requesting_user_id.is_empty() {
+            return Ok(false);
+        }
+        let Some(_config) = &self.persist else {
+            return Ok(false);
+        };
+        let levels = [
+            ReasoningLevel::Off,
+            ReasoningLevel::Minimal,
+            ReasoningLevel::Low,
+            ReasoningLevel::Medium,
+            ReasoningLevel::High,
+            ReasoningLevel::Max,
+        ];
+        let active_str = ReasoningLevel::from_str(active_level)
+            .unwrap_or(ReasoningLevel::Off)
+            .as_str();
+        let level_tokens: Vec<(String, &'static str, &'static str, bool)> = levels
+            .iter()
+            .map(|l| {
+                let token = uuid::Uuid::new_v4().to_string();
+                let is_active = l.as_str() == active_str;
+                (token, l.as_str(), l.label(), is_active)
+            })
+            .collect();
+        let reset_token = uuid::Uuid::new_v4().to_string();
+        let cancel_token = uuid::Uuid::new_v4().to_string();
+
+        let keyboard_rows: Vec<serde_json::Value> = {
+            let mut rows = Vec::new();
+            for chunk in level_tokens.chunks(2) {
+                let row = chunk
+                    .iter()
+                    .map(|(token, _, label, is_active)| {
+                        let display = if *is_active {
+                            format!("✓ {}", label.to_ascii_lowercase())
+                        } else {
+                            label.to_string()
+                        };
+                        serde_json::json!({
+                            "text": display,
+                            "callback_data": format!("{}{}", TELEGRAM_MODEL_PICKER_PREFIX, token),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                rows.push(serde_json::Value::Array(row));
+            }
+            rows.push(serde_json::Value::Array(vec![
+                serde_json::json!({
+                    "text": "Reset",
+                    "callback_data": format!("{}{}", TELEGRAM_MODEL_PICKER_PREFIX, reset_token),
+                }),
+                serde_json::json!({
+                    "text": "Cancel",
+                    "callback_data": format!("{}{}", TELEGRAM_MODEL_PICKER_PREFIX, cancel_token),
+                }),
+            ]));
+            rows
+        };
+        let reply_markup = serde_json::json!({ "inline_keyboard": keyboard_rows });
+
+        let (chat_id, thread_id) = Self::parse_reply_target(&request.reply_target);
+        let chat_id_number = chat_id
+            .parse::<i64>()
+            .context("Telegram reasoning picker reply target is not a numeric chat ID")?;
+
+        let picker_text = "Reasoning level";
+        let mut body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": picker_text,
+        });
+        if let Some(thread_id) = thread_id {
+            body["message_thread_id"] = serde_json::Value::String(thread_id);
+        }
+        let response = self
+            .http_client()
+            .post(self.api_url("sendMessage"))
+            .json(&body)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Telegram sendMessage (reasoning picker) failed: {}",
+                response.status()
+            );
+        }
+        let response_body: serde_json::Value = response.json().await?;
+        if !Self::telegram_api_envelope_ok(&response_body) {
+            anyhow::bail!("Telegram sendMessage (reasoning picker) returned a non-ok envelope");
+        }
+        let picker_message_id = response_body
+            .get("result")
+            .and_then(|r| r.get("message_id"))
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| {
+                anyhow::Error::msg("Telegram reasoning picker response omitted message_id")
+            })?;
+
+        let created_at = Instant::now();
+        let base = PendingModelPicker {
+            created_at,
+            expires_at: created_at + TELEGRAM_MODEL_PICKER_TTL,
+            requesting_user_id: request.requesting_user_id.clone(),
+            reply_target: request.reply_target.clone(),
+            thread_ts: request.thread_ts.clone(),
+            channel_alias: self.alias.clone(),
+            picker_message_id,
+            owner_agent_alias: request.owner_agent_alias.clone(),
+            current: ModelPickerSelection {
+                model_provider: "".into(),
+                model: "".into(),
+            },
+            runtime_routes: Arc::new(vec![]),
+            action: ModelPickerAction::Cancel,
+        };
+        let mut pending_entries = Vec::new();
+        for (token, level_str, _, _) in &level_tokens {
+            pending_entries.push((
+                token.clone(),
+                PendingModelPicker {
+                    action: ModelPickerAction::Reasoning(Some(level_str.to_string())),
+                    ..base.clone()
+                },
+            ));
+        }
+        pending_entries.push((
+            reset_token.clone(),
+            PendingModelPicker {
+                action: ModelPickerAction::Reasoning(Some("reset".to_string())),
+                ..base.clone()
+            },
+        ));
+        pending_entries.push((
+            cancel_token.clone(),
+            PendingModelPicker {
+                action: ModelPickerAction::Cancel,
+                ..base.clone()
+            },
+        ));
+        self.insert_pending_model_picker_batch(pending_entries)
+            .await;
+        if !self
+            .edit_model_picker_message_at(
+                chat_id_number,
+                picker_message_id,
+                picker_text.to_string(),
+                reply_markup,
+            )
+            .await
+        {
+            self.disable_model_picker_keyboard_at(chat_id_number, picker_message_id)
+                .await;
+            self.remove_pending_model_picker_keyboard(&base).await;
+            anyhow::bail!("Telegram reasoning picker keyboard update failed");
         }
         Ok(true)
     }
@@ -13343,6 +13640,114 @@ mod tests {
                 && state.reply_target == "-10042:9"
                 && state.picker_message_id == 77
         }));
+    }
+
+    #[tokio::test]
+    async fn reasoning_panel_publishes_scoped_buttons_without_model_routes() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        for endpoint in ["sendMessage", "editMessageText"] {
+            Mock::given(method("POST"))
+                .and(path_regex(format!(r"/bot[^/]+/{endpoint}$")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true, "result": {"message_id": 77}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let mut config = model_picker_config();
+        config.model_routes.clear();
+        let channel = TelegramChannel::new(
+            "token".into(),
+            "main",
+            Arc::new(|| vec!["test_user".into()]),
+            false,
+        )
+        .with_persistence(Arc::new(RwLock::new(config)))
+        .with_mock_api_base(server.uri());
+        let request = ChannelModelPickerRequest {
+            requesting_user: "test_user".into(),
+            requesting_user_id: "123".into(),
+            reply_target: "-10042:9".into(),
+            thread_ts: Some("9".into()),
+            channel_alias: "main".into(),
+            owner_agent_alias: "assistant".into(),
+            current_model_provider: "openai.primary".into(),
+            current_model: "gpt-current".into(),
+            model_routes: vec![],
+        };
+        assert!(
+            channel
+                .present_reasoning_picker(&request, "medium")
+                .await
+                .unwrap(),
+            "Telegram must present a reasoning panel"
+        );
+        let requests = server.received_requests().await.unwrap();
+        let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(
+            first.get("reply_markup").is_none(),
+            "register tokens before publishing buttons"
+        );
+        let edit: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        let buttons: Vec<_> = edit["reply_markup"]["inline_keyboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|row| row.as_array().unwrap())
+            .collect();
+        assert_eq!(buttons.len(), 8, "six levels, reset and cancel");
+        assert!(buttons.iter().any(|b| {
+            b["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("medium") && t.contains('✓'))
+        }));
+        let pending = channel.pending_model_pickers.lock().await;
+        assert_eq!(pending.len(), 8);
+        assert!(pending.values().all(|s| s.requesting_user_id == "123"
+            && s.reply_target == "-10042:9"
+            && s.thread_ts.as_deref() == Some("9")
+            && s.picker_message_id == 77));
+        let token = pending.iter().find(|(_, s)| matches!(&s.action, ModelPickerAction::Reasoning(Some(level)) if level == "high")).unwrap().0.clone();
+        drop(pending);
+        let callback = serde_json::json!({
+            "id": "reasoning_cb", "from": {"id": 123, "username": "test_user"},
+            "message": {"message_id": 77, "chat": {"id": -10042}, "message_thread_id": 9},
+            "data": format!("{}{}", TELEGRAM_MODEL_PICKER_PREFIX, token)
+        });
+        let mut invalid = callback.clone();
+        invalid["from"]["id"] = serde_json::json!(999);
+        assert!(matches!(
+            channel.process_model_picker_callback(&invalid).await,
+            ModelPickerCallbackOutcome::Rejected
+        ));
+        invalid = callback.clone();
+        invalid["message"]["message_thread_id"] = serde_json::json!(10);
+        assert!(matches!(
+            channel.process_model_picker_callback(&invalid).await,
+            ModelPickerCallbackOutcome::Rejected
+        ));
+        assert!(channel.prevalidate_model_picker_callback(&callback).await);
+        assert!(
+            channel
+                .model_picker_callback_requires_queue(&callback)
+                .await
+        );
+        match channel.process_model_picker_callback(&callback).await {
+            ModelPickerCallbackOutcome::Queued(msg) => {
+                assert_eq!(msg.content, "/thinking high");
+                assert_eq!(msg.platform_sender_id.as_deref(), Some("123"));
+                assert_eq!(msg.reply_target, "-10042:9");
+                assert_eq!(msg.thread_ts.as_deref(), Some("9"));
+            }
+            other => panic!("reasoning callback not queued: {other:?}"),
+        }
+        assert!(matches!(
+            channel.process_model_picker_callback(&callback).await,
+            ModelPickerCallbackOutcome::Rejected
+        ));
     }
 
     #[tokio::test]
