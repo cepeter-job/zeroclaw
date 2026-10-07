@@ -43651,6 +43651,20 @@ BTC is currently around $65,000 based on latest tool output."#
     }
 
     #[test]
+    fn reasoning_command_is_handled_without_reaching_the_model() {
+        assert_eq!(
+            parse_runtime_command("telegram", "/reasoning high"),
+            Some(ChannelRuntimeCommand::SetThinking(Some(
+                ThinkingLevel::High
+            )))
+        );
+        assert_eq!(
+            parse_runtime_command("telegram", "/reasoning@zeroclaw_bot off"),
+            Some(ChannelRuntimeCommand::SetThinking(Some(ThinkingLevel::Off)))
+        );
+    }
+
+    #[test]
     fn parse_runtime_command_maps_thinking_levels() {
         assert_eq!(
             parse_runtime_command("telegram", "/thinking high"),

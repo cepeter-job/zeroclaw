@@ -46,6 +46,8 @@ jobs:
         run: |
           cargo test --locked -p zeroclaw-channels --features channel-telegram --lib model_picker
           cargo test --locked -p zeroclaw-channels --features channel-telegram --lib model_catalog_routes
+      - name: Reasoning command contracts
+        run: cargo test --locked -p zeroclaw-channels --features channel-telegram --lib reasoning
       - name: Build native CLI
         run: cargo build --locked --bin zeroclaw
       - name: Upload tested native CLI
