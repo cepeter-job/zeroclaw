@@ -42,6 +42,8 @@ jobs:
         run: |
           cargo test --locked -p zeroclaw-providers --lib factory::tests
           cargo test --locked -p zeroclaw-providers --lib absent_catalog_sources_return_typed_unsupported
+      - name: Telegram refreshed catalog picker contracts
+        run: cargo test --locked -p zeroclaw-channels --features channel-telegram --lib model_picker_offers_refreshed_catalog_without_persisted_routes
       - name: Build native CLI
         run: cargo build --locked --bin zeroclaw
       - name: Upload tested native CLI

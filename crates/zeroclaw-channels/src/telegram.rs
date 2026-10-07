@@ -12620,6 +12620,54 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_offers_refreshed_catalog_without_persisted_routes() {
+        let folder = tempfile::tempdir().expect("create catalog fixture");
+        let mut config = model_picker_config();
+        config.data_dir = folder.path().to_path_buf();
+        std::fs::create_dir_all(folder.path().join("state")).unwrap();
+        let cache = zeroclaw_config::schema::ModelCacheState {
+            entries: vec![zeroclaw_config::schema::ModelCacheEntry {
+                model_provider: "anthropic.team".into(),
+                models: vec!["claude-sonnet".into(), "claude-new".into()],
+            }],
+        };
+        std::fs::write(
+            folder.path().join("state/models_cache.json"),
+            serde_json::to_vec(&cache).unwrap(),
+        )
+        .unwrap();
+        let runtime_routes = model_picker_runtime_routes(&config);
+        let context =
+            TelegramChannel::model_picker_context(&config, "main", runtime_routes.as_ref())
+                .expect("configured Telegram owner should produce a picker");
+        let category = context
+            .categories
+            .iter()
+            .find(|c| c.provider_ref == "anthropic.team")
+            .unwrap();
+        assert_eq!(
+            category.options.len(),
+            2,
+            "picker must include newly discovered models"
+        );
+        let selected = category
+            .options
+            .iter()
+            .find(|o| o.model == "claude-new")
+            .unwrap();
+        assert!(TelegramChannel::model_picker_route_available(
+            &config,
+            runtime_routes.as_ref(),
+            selected
+        ));
+        assert_eq!(
+            config.model_routes.len(),
+            4,
+            "catalog must not rewrite persistent routes"
+        );
+    }
+
+    #[test]
     fn model_picker_configured_aliases_group_routes_by_provider() {
         let config = model_picker_config();
         let runtime_routes = model_picker_runtime_routes(&config);
